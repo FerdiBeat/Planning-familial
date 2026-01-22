@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Planning Familial - Elzéar, Elias & Alma</title>
+    <!-- Tailwind CSS pour le design -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- React & Babel pour l'interactivité -->
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- Icônes Lucide -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        @media print {
+            .no-print { display: none; }
+            body { background: white; padding: 0; }
+            .max-w-7xl { max-width: 100% !important; }
+        }
+        input[type="time"]::-webkit-calendar-picker-indicator {
+            filter: invert(40%) sepia(50%) saturate(1000%) hue-rotate(200deg) brightness(90%) contrast(90%);
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body class="bg-slate-50 text-slate-900">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect } = React;
+        const { 
+            Calendar, Clock, Edit2, ChevronLeft, ChevronRight, 
+            ClipboardList, User, Home, MapPin, Users, Info, LayoutGrid, List, Save, Check 
+        } = lucide;
+
+        // --- Configuration Firebase ---
+        // L'environnement injectera automatiquement les clés via __firebase_config
+        const firebaseConfig = JSON.parse(__firebase_config);
+        
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, onSnapshot, collection } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'family-tracker-v1';
+
+        const App = () => {
+            const [viewMode, setViewMode] = useState('week'); // 'week' ou 'day'
+            const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
+            const [activities, setActivities] = useState({});
+            const [user, setUser] = useState(null);
+            const [isSyncing, setIsSyncing] = useState(false);
+            
+            const children = ['Elzéar', 'Elias', 'Alma'];
+            const parents = ['Papa', 'Maman'];
+
+            // Initialisation Auth (Règle 3)
+            useEffect(() => {
+                const initAuth = async () => {
+                    if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                        await signInWithCustomToken(auth, __initial_auth_token);
+                    } else {
+                        await signInAnonymously(auth);
+                    }
+                };
+                initAuth();
+                const unsubscribe = onAuthStateChanged(auth, setUser);
+                return () => unsubscribe();
+            }, []);
+
+            // Synchronisation en temps réel (Règle 1)
+            useEffect(() => {
+                if (!user) return;
+                const activitiesCol = collection(db, 'artifacts', appId, 'public', 'data', 'dailyActivities');
+                const unsubscribe = onSnapshot(activitiesCol, (snapshot) => {
+                    const newActivities = {};
+                    snapshot.forEach((doc) => {
+                        newActivities[doc.id] = doc.data();
+                    });
+                    setActivities(newActivities);
+                }, (error) => console.error("Erreur synchro:", error));
+                return () => unsubscribe();
+            }, [user]);
+
+            const getStartOfWeek = (date) => {
+                const d = new Date(date);
+                const day = d.getDay();
+                const diff = d.getDate() - day + (day === 0 ? -6 : 1);
+                return new Date(d.setDate(diff));
+            };
+
+            const [currentWeekStart, setCurrentWeekStart] = useState(getStartOfWeek(new Date()));
+
+            const weekDays = [...Array(7)].map((_, i) => {
+                const d = new Date(currentWeekStart);
+                d.setDate(d.getDate() + i);
+                return d.toISOString().split('T')[0];
+            });
+
+            const updateData = async (date, person, field, value) => {
+                if (!user) return;
+                setIsSyncing(true);
+                const updatedDay = {
+                    ...(activities[date] || {}),
+                    [person]: { ...(activities[date]?.[person] || {}), [field]: value }
+                };
+                try {
+                    const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'dailyActivities', date);
+                    await setDoc(docRef, updatedDay, { merge: true });
+                } catch (e) {
+                    console.error("Erreur sauvegarde:", e);
+                } finally {
+                    setIsSyncing(false);
+                }
+            };
+
+            const navigate = (direction) => {
+                if (viewMode === 'week') {
+                    const d = new Date(currentWeekStart);
+                    d.setDate(d.getDate() + (direction * 7));
+                    setCurrentWeekStart(d);
+                } else {
+                    const d = new Date(selectedDate);
+                    d.setDate(d.getDate() + direction);
+                    const newDate = d.toISOString().split('T')[0];
+                    setSelectedDate(newDate);
+                    setCurrentWeekStart(getStartOfWeek(d));
+                }
+            };
+
+            const ParentBadge = ({ name, date, compact = false }) => {
+                const presence = activities[date]?.[name]?.presence || 'Maison';
+                const isParis = presence === 'Paris';
+                return (
+                    <div className={`transition-all duration-300 rounded-xl p-2 border ${isParis ? 'bg-orange-500 border-orange-600 text-white shadow-md' : 'bg-white border-slate-200 text-slate-700'} ${compact ? 'flex-1 py-1' : 'flex-1'}`}>
+                        <div className="flex items-center justify-between gap-1">
+                            <span className={`font-bold ${compact ? 'text-[10px]' : 'text-xs'}`}>{name}</span>
+                            {isParis ? <MapPin size={12} /> : <Home size={12} className="opacity-40" />}
+                        </div>
+                        {!compact && (
+                            <div className="mt-2 flex gap-1">
+                                <button onClick={(e) => { e.stopPropagation(); updateData(date, name, 'presence', 'Maison'); }} className={`flex-1 text-[9px] py-1 rounded-md border ${presence === 'Maison' ? 'bg-indigo-50 border-indigo-200 text-indigo-700 font-bold' : 'bg-transparent border-transparent'}`}>Maison</button>
+                                <button onClick={(e) => { e.stopPropagation(); updateData(date, name, 'presence', 'Paris'); }} className={`flex-1 text-[9px] py-1 rounded-md border ${presence === 'Paris' ? 'bg-white/20 border-white/40 text-white font-bold' : 'bg-transparent border-transparent opacity-60'}`}>Paris</button>
+                            </div>
+                        )}
+                    </div>
+                );
+            };
+
+            const getChildStyle = (name) => {
+                const styles = { 'Elzéar': 'bg-blue-50 text-blue-800', 'Elias': 'bg-emerald-50 text-emerald-800', 'Alma': 'bg-rose-50 text-rose-800' };
+                return styles[name] || 'bg-slate-50 text-slate-800';
+            };
+
+            return (
+                <div className="min-h-screen p-2 md:p-6">
+                    <div className="max-w-7xl mx-auto">
+                        <header className="mb-6 space-y-4 no-print">
+                            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                                <div className="flex items-center gap-4">
+                                    <div>
+                                        <h1 className="text-2xl font-black text-slate-800 flex items-center gap-2"><Users className="text-indigo-600" /> Planning Familial</h1>
+                                        <p className="text-sm text-slate-500">{viewMode === 'week' ? `Semaine du ${currentWeekStart.toLocaleDateString('fr-FR')}` : new Date(selectedDate).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' })}</p>
+                                    </div>
+                                    <div className="flex items-center gap-1 px-3 py-1 bg-white rounded-full border border-slate-200 text-[10px] font-bold text-slate-400">
+                                        {isSyncing ? <span className="flex items-center gap-1 text-indigo-500"><Save size={12} className="animate-pulse" /> Sauvegarde...</span> : <span className="flex items-center gap-1 text-emerald-500"><Check size={12} /> Synchronisé</span>}
+                                    </div>
+                                </div>
+                                <div className="flex items-center gap-2 bg-white p-1 rounded-xl shadow-sm border border-slate-200">
+                                    <button onClick={() => setViewMode('week')} className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold transition-all ${viewMode === 'week' ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-500 hover:bg-slate-50'}`}><LayoutGrid size={16} /> Semaine</button>
+                                    <button onClick={() => setViewMode('day')} className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold transition-all ${viewMode === 'day' ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-500 hover:bg-slate-50'}`}><List size={16} /> Jour</button>
+                                </div>
+                            </div>
+                            <div className="flex items-center justify-between bg-white rounded-2xl shadow-sm border border-slate-200 p-2">
+                                <button onClick={() => navigate(-1)} className="p-3 hover:bg-slate-100 rounded-xl"><ChevronLeft size={24} className="text-indigo-600" /></button>
+                                <span className="font-black uppercase tracking-widest text-slate-400 text-xs">{viewMode === 'week' ? currentWeekStart.toLocaleString('fr-FR', { month: 'long', year: 'numeric' }) : new Date(selectedDate).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long' })}</span>
+                                <button onClick={() => navigate(1)} className="p-3 hover:bg-slate-100 rounded-xl"><ChevronRight size={24} className="text-indigo-600" /></button>
+                            </div>
+                        </header>
+
+                        {viewMode === 'week' ? (
+                            <div className="grid grid-cols-1 md:grid-cols-7 gap-3">
+                                {weekDays.map(date => {
+                                    const isToday = date === new Date().toISOString().split('T')[0];
+                                    return (
+                                        <div key={date} onClick={() => { setSelectedDate(date); setViewMode('day'); }} className={`cursor-pointer group rounded-2xl border transition-all duration-300 flex flex-col min-h-[400px] overflow-hidden ${isToday ? 'bg-indigo-50/50 border-indigo-300 shadow-lg' : 'bg-white border-slate-200 hover:border-indigo-300 hover:shadow-md'}`}>
+                                            <div className={`p-3 text-center border-b ${isToday ? 'bg-indigo-600 text-white' : 'bg-slate-800 text-white'}`}>
+                                                <div className="text-[10px] uppercase font-bold opacity-70">{new Date(date).toLocaleDateString('fr-FR', { weekday: 'short' })}</div>
+                                                <div className="text-lg font-black">{new Date(date).getDate()}</div>
+                                            </div>
+                                            <div className="p-2 space-y-3 flex-grow flex flex-col">
+                                                <div className="flex gap-1 mb-2">{parents.map(p => <ParentBadge key={p} name={p} date={date} compact={true} />)}</div>
+                                                {children.map(child => {
+                                                    const data = activities[date]?.[child] || {};
+                                                    return (
+                                                        <div key={child} className="p-2 rounded-lg bg-slate-50 border border-slate-100">
+                                                            <div className="flex items-center justify-between mb-1">
+                                                                <span className="text-[10px] font-bold text-slate-500">{child}</span>
+                                                                {data.exitTime && <span className="text-[9px] text-indigo-600 font-bold">{data.exitTime}</span>}
+                                                            </div>
+                                                            {data.activity && <p className="text-[10px] leading-tight text-slate-600 truncate">{data.activity}</p>}
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        ) : (
+                            <div className="max-w-4xl mx-auto space-y-6">
+                                <div className="grid grid-cols-2 gap-4">
+                                    {parents.map(p => (
+                                        <div key={p} className="flex flex-col gap-2">
+                                            <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest px-2">Statut {p}</h3>
+                                            <ParentBadge name={p} date={selectedDate} />
+                                        </div>
+                                    ))}
+                                </div>
+                                <div className="grid grid-cols-1 md:grid-cols-3 gap-6 pt-4 border-t border-slate-200">
+                                    {children.map(child => {
+                                        const data = activities[selectedDate]?.[child] || {};
+                                        const styleClass = getChildStyle(child);
+                                        return (
+                                            <div key={child} className="rounded-2xl border shadow-sm flex flex-col bg-white overflow-hidden">
+                                                <div className={`p-4 border-b flex items-center justify-between ${styleClass}`}>
+                                                    <span className="font-black text-lg">{child}</span>
+                                                    <div className="flex items-center gap-1 bg-white/40 px-2 py-1 rounded-lg">
+                                                        <Clock size={12} />
+                                                        <input type="time" className="bg-transparent border-none p-0 w-12 text-xs focus:ring-0 font-bold cursor-pointer" value={data.exitTime || ''} onChange={(e) => updateData(selectedDate, child, 'exitTime', e.target.value)} />
+                                                    </div>
+                                                </div>
+                                                <div className="p-5 space-y-4">
+                                                    <div className="space-y-1">
+                                                        <label className="text-[10px] font-bold text-slate-400 uppercase">Activité</label>
+                                                        <div className="relative">
+                                                            <ClipboardList size={16} className="absolute left-3 top-3 text-slate-300" />
+                                                            <input placeholder="Natation, Tennis..." className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 border outline-none" value={data.activity || ''} onChange={(e) => updateData(selectedDate, child, 'activity', e.target.value)} />
+                                                        </div>
+                                                    </div>
+                                                    <div className="space-y-1">
+                                                        <label className="text-[10px] font-bold text-slate-400 uppercase">Notes</label>
+                                                        <div className="relative">
+                                                            <Info size={16} className="absolute left-3 top-3 text-slate-300" />
+                                                            <textarea placeholder="Goûter, sac de sport..." rows="3" className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 border outline-none resize-none" value={data.notes || ''} onChange={(e) => updateData(selectedDate, child, 'notes', e.target.value)} />
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+                        )}
+                        <div className="mt-8 flex justify-center no-print">
+                            <button onClick={() => window.print()} className="bg-slate-800 text-white px-6 py-2 rounded-xl text-sm font-bold shadow-lg hover:bg-slate-700 transition-colors">Imprimer le planning</button>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
